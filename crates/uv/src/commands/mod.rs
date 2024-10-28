@@ -78,6 +78,8 @@ mod tool;
 mod venv;
 mod version;
 
+pub (crate) use project::ExportTarget;
+
 #[derive(Copy, Clone)]
 pub(crate) enum ExitStatus {
     /// The command succeeded.

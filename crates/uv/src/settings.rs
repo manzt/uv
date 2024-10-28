@@ -39,8 +39,8 @@ use uv_static::EnvVars;
 use uv_warnings::warn_user_once;
 use uv_workspace::pyproject::DependencyType;
 
-use crate::commands::ToolRunCommand;
 use crate::commands::{pip::operations::Modifications, InitKind, InitProjectKind};
+use crate::commands::{ExportTarget, ToolRunCommand};
 
 /// The default publish URL.
 const PYPI_PUBLISH_URL: &str = "https://upload.pypi.org/legacy/";
@@ -1071,7 +1071,7 @@ impl TreeSettings {
 #[derive(Debug, Clone)]
 pub(crate) struct ExportSettings {
     pub(crate) format: ExportFormat,
-    pub(crate) package: Option<PackageName>,
+    pub(crate) target: ExportTarget,
     pub(crate) extras: ExtrasSpecification,
     pub(crate) dev: DevGroupsSpecification,
     pub(crate) editable: EditableMode,
@@ -1117,10 +1117,17 @@ impl ExportSettings {
             build,
             refresh,
             python,
+            script,
         } = args;
 
         Self {
-            package,
+            target: if let Some(package_name) = package {
+                ExportTarget::Package(package_name)
+            } else if let Some(script) = script {
+                ExportTarget::Script(script)
+            } else {
+                ExportTarget::Unknown
+            },
             format,
             extras: ExtrasSpecification::from_args(
                 flag(all_extras, no_all_extras).unwrap_or_default(),

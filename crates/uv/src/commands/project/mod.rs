@@ -57,6 +57,8 @@ pub(crate) mod run;
 pub(crate) mod sync;
 pub(crate) mod tree;
 
+pub(crate) use export::ExportTarget;
+
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum ProjectError {
     #[error("The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.")]

@@ -9,6 +9,7 @@ use anstream::eprintln;
 use anyhow::Result;
 use clap::error::{ContextKind, ContextValue};
 use clap::{CommandFactory, Parser};
+use commands::ExportTarget;
 use owo_colors::OwoColorize;
 use settings::PipTreeSettings;
 use tokio::task::spawn_blocking;
@@ -1500,7 +1501,7 @@ async fn run_project(
             commands::export(
                 project_dir,
                 args.format,
-                args.package,
+                args.target,
                 args.hashes,
                 args.install_options,
                 args.output_file,
