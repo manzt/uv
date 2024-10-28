@@ -113,7 +113,7 @@ impl Workspace {
     pub async fn discover(
         path: &Path,
         options: &DiscoveryOptions<'_>,
-    ) -> Result<Workspace, WorkspaceError> {
+    ) -> Result<Self, WorkspaceError> {
         let path = std::path::absolute(path)
             .map_err(WorkspaceError::Normalize)?
             .clone();

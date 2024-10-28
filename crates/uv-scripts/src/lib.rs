@@ -59,6 +59,7 @@ pub struct Pep723Script {
     pub postlude: String,
 }
 
+
 impl Pep723Script {
     /// Read the PEP 723 `script` metadata from a Python file, if it exists.
     ///

@@ -9,7 +9,6 @@ use anstream::eprintln;
 use anyhow::Result;
 use clap::error::{ContextKind, ContextValue};
 use clap::{CommandFactory, Parser};
-use commands::ExportTarget;
 use owo_colors::OwoColorize;
 use settings::PipTreeSettings;
 use tokio::task::spawn_blocking;

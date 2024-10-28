@@ -3,6 +3,7 @@ use std::env;
 use anyhow::{Context, Result};
 use itertools::Itertools;
 use owo_colors::OwoColorize;
+use uv_fs::Simplified;
 use std::path::{Path, PathBuf};
 
 use uv_cache::Cache;
@@ -14,6 +15,7 @@ use uv_configuration::{
 use uv_normalize::PackageName;
 use uv_python::{PythonDownloads, PythonPreference, PythonRequest};
 use uv_resolver::RequirementsTxtExport;
+use uv_scripts::Pep723Script;
 use uv_workspace::{DiscoveryOptions, MemberDiscovery, VirtualProject, Workspace};
 
 use crate::commands::pip::loggers::DefaultResolveLogger;
@@ -26,7 +28,7 @@ use crate::printer::Printer;
 use crate::settings::ResolverSettings;
 
 #[derive(Debug, Clone)]
-pub (crate) enum ExportTarget {
+pub(crate) enum ExportTarget {
     Unknown,
     Package(PackageName),
     Script(PathBuf),
@@ -59,10 +61,17 @@ pub(crate) async fn export(
     printer: Printer,
 ) -> Result<ExitStatus> {
     // Identify the project.
-
     let project = match target {
-        ExportTarget::Script(script) => {
-            todo!();
+        ExportTarget::Script(script) => match Pep723Script::read(&script).await? {
+            Some(script) => {
+                todo!();
+            }
+            None => {
+                return Err(anyhow::anyhow!(
+                    "The script `{}` does not contain a valid PEP 723 metadata block",
+                    &script.user_display(),
+                ));
+            }
         },
         ExportTarget::Package(package) => VirtualProject::Project(
             Workspace::discover(project_dir, &DiscoveryOptions::default())

@@ -20,7 +20,7 @@ use uv_distribution_types::{
     UnresolvedRequirementSpecification,
 };
 use uv_git::ResolvedRepositoryReference;
-use uv_normalize::{PackageName, DEV_DEPENDENCIES};
+use uv_normalize::{GroupName, PackageName, DEV_DEPENDENCIES};
 use uv_pep440::Version;
 use uv_pypi_types::{Requirement, SupportedEnvironments};
 use uv_python::{Interpreter, PythonDownloads, PythonEnvironment, PythonPreference, PythonRequest};
@@ -28,8 +28,10 @@ use uv_requirements::upgrade::{read_lock_requirements, LockedRequirements};
 use uv_requirements::ExtrasResolver;
 use uv_resolver::{
     FlatIndex, InMemoryIndex, Lock, LockVersion, Options, OptionsBuilder, PythonRequirement,
-    RequiresPython, ResolverManifest, ResolverMarkers, SatisfiesResult, VERSION,
+    RequiresPython, ResolverManifest, ResolverMarkers, SatisfiesResult,
+    VERSION,
 };
+use uv_scripts::Pep723Script;
 use uv_types::{BuildContext, BuildIsolation, EmptyInstalledPackages, HashStrategy};
 use uv_warnings::{warn_user, warn_user_once};
 use uv_workspace::{DiscoveryOptions, Workspace};
@@ -201,7 +203,7 @@ pub(super) async fn do_safe_lock(
 
         // Perform the lock operation, but don't write the lockfile to disk.
         let result = do_lock(
-            workspace,
+            Lockable::Workspace(workspace),
             interpreter,
             Some(existing),
             settings,
@@ -262,9 +264,37 @@ pub(super) async fn do_safe_lock(
     }
 }
 
+enum Lockable<'a> {
+    Workspace(&'a Workspace),
+    Script(&'a Pep723Script),
+}
+
+struct LockContext<'a> {
+    requirements: Vec<Requirement>,
+    overrides: Vec<Requirement>,
+    constraints: Vec<Requirement>,
+    dev: Vec<GroupName>,
+    members: Vec<PackageName>,
+    requires_python: Option<RequiresPython>,
+    environments: Option<&'a SupportedEnvironments>,
+    install_path: &'a Path,
+}
+
+impl<'a> From<&'a Workspace> for Lockable<'a> {
+    fn from(workspace: &'a Workspace) -> Self {
+        Lockable::Workspace(workspace)
+    }
+}
+
+impl<'a> From<&'a Pep723Script> for Lockable<'a> {
+    fn from(script: &'a Pep723Script) -> Self {
+        Lockable::Script(script)
+    }
+}
+
 /// Lock the project requirements into a lockfile.
-async fn do_lock(
-    workspace: &Workspace,
+async fn do_lock<'a, T>(
+    lockable: T,
     interpreter: &Interpreter,
     existing_lock: Option<Lock>,
     settings: ResolverSettingsRef<'_>,
@@ -276,7 +306,11 @@ async fn do_lock(
     native_tls: bool,
     cache: &Cache,
     printer: Printer,
-) -> Result<LockResult, ProjectError> {
+) -> Result<LockResult, ProjectError>
+where
+    T: Into<Lockable<'a>>,
+{
+    let lockable = lockable.into();
     let start = std::time::Instant::now();
 
     // Extract the project settings.
@@ -297,38 +331,58 @@ async fn do_lock(
         build_options,
         sources,
     } = settings;
+    // RequiresPython::intersection(script.metadata.requires_python.iter())
 
     // Collect the requirements, etc.
-    let requirements = workspace.non_project_requirements()?;
-    let overrides = workspace.overrides().into_iter().collect::<Vec<_>>();
-    let constraints = workspace.constraints();
-    let dev: Vec<_> = workspace
-        .pyproject_toml()
-        .dependency_groups
-        .iter()
-        .flat_map(|groups| groups.keys().cloned())
-        .chain(std::iter::once(DEV_DEPENDENCIES.clone()))
-        .collect();
-    let source_trees = vec![];
+    let ctx: LockContext = match lockable {
+        Lockable::Workspace(workspace) => {
+            LockContext {
+                requirements: workspace.non_project_requirements()?,
+                overrides: workspace.overrides(),
+                constraints: workspace.constraints(),
+                dev: workspace
+                    .pyproject_toml()
+                    .dependency_groups
+                    .iter()
+                    .flat_map(|groups| groups.keys().cloned())
+                    .chain(std::iter::once(DEV_DEPENDENCIES.clone()))
+                    .collect(),
+                members: {
+                    let mut members = workspace.packages().keys().cloned().collect::<Vec<_>>();
+                    members.sort();
 
-    // Collect the list of members.
-    let members = {
-        let mut members = workspace.packages().keys().cloned().collect::<Vec<_>>();
-        members.sort();
-
-        // If this is a non-virtual project with a single member, we can omit it from the lockfile.
-        // If any members are added or removed, it will inherently mismatch. If the member is
-        // renamed, it will also mismatch.
-        if members.len() == 1 && !workspace.is_non_project() {
-            members.clear();
+                    // If this is a non-virtual project with a single member, we can omit it from the lockfile.
+                    // If any members are added or removed, it will inherently mismatch. If the member is
+                    // renamed, it will also mismatch.
+                    if members.len() == 1 && !workspace.is_non_project() {
+                        members.clear();
+                    }
+                    members
+                },
+                // Determine the supported Python range. If no range is defined, and warn and default to the
+                // current minor version.
+                requires_python: find_requires_python(workspace)?,
+                environments: workspace.environments(),
+                install_path: workspace.install_path(),
+            }
         }
-
-        members
+        Lockable::Script(script) => LockContext {
+            requirements: vec![],
+            overrides: vec![],
+            constraints: vec![],
+            dev: vec![],
+            members: vec![],
+            requires_python: RequiresPython::intersection(script.metadata.requires_python.iter())?,
+            environments: None,
+            install_path: script.path.parent().expect("no parent"),
+        },
     };
+
+    let source_trees = vec![];
 
     // Collect the list of supported environments.
     let environments = {
-        let environments = workspace.environments();
+        let environments = ctx.environments;
 
         // Ensure that the environments are disjoint.
         if let Some(environments) = &environments {
@@ -362,11 +416,7 @@ async fn do_lock(
         environments
     };
 
-    // Determine the supported Python range. If no range is defined, and warn and default to the
-    // current minor version.
-    let requires_python = find_requires_python(workspace)?;
-
-    let requires_python = if let Some(requires_python) = requires_python {
+    let requires_python = if let Some(requires_python) = ctx.requires_python {
         if requires_python.is_unbounded() {
             let default =
                 RequiresPython::greater_than_equal_version(&interpreter.python_minor_version());
@@ -489,38 +539,43 @@ async fn do_lock(
 
     // If any of the resolution-determining settings changed, invalidate the lock.
     let existing_lock = if let Some(existing_lock) = existing_lock {
-        match ValidatedLock::validate(
-            existing_lock,
-            workspace,
-            &members,
-            &requirements,
-            &constraints,
-            &overrides,
-            environments,
-            dependency_metadata,
-            interpreter,
-            &requires_python,
-            index_locations,
-            build_options,
-            upgrade,
-            &options,
-            &hasher,
-            &state.index,
-            &database,
-            printer,
-        )
-        .await
-        {
-            Ok(result) => Some(result),
-            Err(ProjectError::Lock(err)) if err.is_resolution() => {
-                // Resolver errors are not recoverable, as such errors can leave the resolver in a
-                // broken state. Specifically, tasks that fail with an error can be left as pending.
-                return Err(ProjectError::Lock(err));
+        if let Lockable::Workspace(workspace) = lockable {
+            match ValidatedLock::validate(
+                existing_lock,
+                workspace,
+                &ctx.members,
+                &ctx.requirements,
+                &ctx.constraints,
+                &ctx.overrides,
+                environments,
+                dependency_metadata,
+                interpreter,
+                &requires_python,
+                index_locations,
+                build_options,
+                upgrade,
+                &options,
+                &hasher,
+                &state.index,
+                &database,
+                printer,
+            )
+            .await
+            {
+                Ok(result) => Some(result),
+                Err(ProjectError::Lock(err)) if err.is_resolution() => {
+                    // Resolver errors are not recoverable, as such errors can leave the resolver in a
+                    // broken state. Specifically, tasks that fail with an error can be left as pending.
+                    return Err(ProjectError::Lock(err));
+                }
+                Err(err) => {
+                    warn_user!("Failed to validate existing lockfile: {err}");
+                    None
+                }
             }
-            Err(err) => {
-                warn_user!("Failed to validate existing lockfile: {err}");
-                None
-            }
+        } else {
+            warn_user!("Scripts do not support existing lockfiles");
+            None
         }
     } else {
         None
@@ -581,31 +636,42 @@ async fn do_lock(
                     }),
             );
 
-            // Resolve the requirements.
-            let resolution = pip::operations::resolve(
+            let member_requirements = if let Lockable::Workspace(workspace) = lockable {
                 ExtrasResolver::new(&hasher, &state.index, database)
                     .with_reporter(ResolverReporter::from(printer))
                     .resolve(workspace.members_requirements())
                     .await?
+            } else {
+                vec![]
+            };
+
+            // Resolve the requirements.
+            let resolution = pip::operations::resolve(
+                member_requirements
                     .into_iter()
-                    .chain(requirements.iter().cloned())
+                    .chain(ctx.requirements.iter().cloned())
                     .map(UnresolvedRequirementSpecification::from)
                     .collect(),
-                constraints
+                ctx.constraints
                     .iter()
                     .cloned()
                     .map(NameRequirementSpecification::from)
                     .collect(),
-                overrides
+                ctx.overrides
                     .iter()
                     .cloned()
                     .map(UnresolvedRequirementSpecification::from)
                     .collect(),
-                dev,
+                ctx.dev,
                 source_trees,
                 // The root is always null in workspaces, it "depends on" the projects
                 None,
-                Some(workspace.packages().keys().cloned().collect()),
+                match lockable {
+                    Lockable::Workspace(workspace) => {
+                        Some(workspace.packages().keys().cloned().collect())
+                    }
+                    Lockable::Script(_) => None,
+                },
                 &extras,
                 preferences,
                 EmptyInstalledPackages,
@@ -632,17 +698,20 @@ async fn do_lock(
             // Notify the user of any resolution diagnostics.
             pip::operations::diagnose_resolution(resolution.diagnostics(), printer)?;
 
-            let manifest = ResolverManifest::new(
-                members,
-                requirements,
-                constraints,
-                overrides,
+            let mut manifest = ResolverManifest::new(
+                ctx.members,
+                ctx.requirements,
+                ctx.constraints,
+                ctx.overrides,
                 dependency_metadata.values().cloned(),
-            )
-            .relative_to(workspace)?;
+            );
+
+            if let Lockable::Workspace(workspace) = lockable {
+                manifest = manifest.relative_to(workspace)?;
+            };
 
             let previous = existing_lock.map(ValidatedLock::into_lock);
-            let lock = Lock::from_resolution_graph(&resolution, workspace.install_path())?
+            let lock = Lock::from_resolution_graph(&resolution, ctx.install_path)?
                 .with_manifest(manifest)
                 .with_supported_environments(
                     environments
