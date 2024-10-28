@@ -25,12 +25,19 @@ use crate::commands::{diagnostics, pip, ExitStatus, OutputWriter, SharedState};
 use crate::printer::Printer;
 use crate::settings::ResolverSettings;
 
+#[derive(Debug, Clone)]
+pub (crate) enum ExportTarget {
+    Unknown,
+    Package(PackageName),
+    Script(PathBuf),
+}
+
 /// Export the project's `uv.lock` in an alternate format.
 #[allow(clippy::fn_params_excessive_bools)]
 pub(crate) async fn export(
     project_dir: &Path,
     format: ExportFormat,
-    package: Option<PackageName>,
+    target: ExportTarget,
     hashes: bool,
     install_options: InstallOptions,
     output_file: Option<PathBuf>,
@@ -52,24 +59,31 @@ pub(crate) async fn export(
     printer: Printer,
 ) -> Result<ExitStatus> {
     // Identify the project.
-    let project = if let Some(package) = package {
-        VirtualProject::Project(
+
+    let project = match target {
+        ExportTarget::Script(script) => {
+            todo!();
+        },
+        ExportTarget::Package(package) => VirtualProject::Project(
             Workspace::discover(project_dir, &DiscoveryOptions::default())
                 .await?
                 .with_current_project(package.clone())
                 .with_context(|| format!("Package `{package}` not found in workspace"))?,
-        )
-    } else if frozen {
-        VirtualProject::discover(
-            project_dir,
-            &DiscoveryOptions {
-                members: MemberDiscovery::None,
-                ..DiscoveryOptions::default()
-            },
-        )
-        .await?
-    } else {
-        VirtualProject::discover(project_dir, &DiscoveryOptions::default()).await?
+        ),
+        ExportTarget::Unknown => {
+            if frozen {
+                VirtualProject::discover(
+                    project_dir,
+                    &DiscoveryOptions {
+                        members: MemberDiscovery::None,
+                        ..DiscoveryOptions::default()
+                    },
+                )
+                .await?
+            } else {
+                VirtualProject::discover(project_dir, &DiscoveryOptions::default()).await?
+            }
+        }
     };
 
     // Determine the default groups to include.
