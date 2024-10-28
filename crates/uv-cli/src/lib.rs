@@ -3326,8 +3326,14 @@ pub struct ExportArgs {
     /// Export the dependencies for a specific package in the workspace.
     ///
     /// If the workspace member does not exist, uv will exit with an error.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "script")]
     pub package: Option<PackageName>,
+
+    /// Export the dependencies for a specific PEP 723 script, rather than for a project.
+    ///
+    /// If the script is not a PEP 723 script, uv will exit with an error.
+    #[arg(long, conflicts_with = "package")]
+    pub script: Option<PathBuf>,
 
     /// Include optional dependencies from the specified extra name.
     ///
