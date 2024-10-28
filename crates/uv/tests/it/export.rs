@@ -1134,7 +1134,7 @@ fn export_script() -> Result<()> {
 
     context.lock().assert().success();
 
-    uv_snapshot!(context.filters(), context.export().arg("--script").arg("main.py"), @r###"
+    uv_snapshot!(context.filters(), context.export().arg("--script").arg("foo.py"), @r###"
     success: true
     exit_code: 0
     ----- stdout -----
